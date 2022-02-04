@@ -47,7 +47,10 @@ class UniFiController:
         self.url = url
 
         if skip_ssl_verification:
-            ssl._create_default_https_context = ssl._create_unverified_context
+            try:
+                ssl._create_default_https_context = ssl._create_unverified_context
+            except:
+                pass
 
         cookie_jar  = cookielib.CookieJar()
         self.opener = urllib2.build_opener(urllib2.HTTPCookieProcessor(cookie_jar))
@@ -62,11 +65,16 @@ class UniFiController:
         :return: The response
         :rtype: dict
         '''
-        url  = os.path.join(self.url, 'api', endpoint)
+        if endpoint == 'auth/login':
+            url = os.path.join(self.url, 'api', endpoint)
+        else:
+            url  = os.path.join(self.url, 'proxy/network/api', endpoint)
         data = json.dumps(data) if data else None
 
+        req = urllib2.Request(url, data=data, headers={'Content-Type': 'application/json'})
+
         LOGGER.debug('Sending request to %s with data %s', url, data)
-        response = self.opener.open(fullurl=url, data=data)
+        response = self.opener.open(req)
 
         return json.load(response)
 
@@ -80,7 +88,7 @@ class UniFiController:
         LOGGER.info('Logging in')
 
         response = self._request(
-            endpoint='login',
+            endpoint='auth/login',
             data={
                 'username': username,
                 'password': password,
@@ -96,7 +104,11 @@ class UniFiController:
         '''
         LOGGER.info('Getting clients')
 
-        return self._request(endpoint='s/{}/list/user'.format(site))['data']
+        return self._request(endpoint='s/{}/stat/sta'.format(site))['data']
+
+    def get_networks(self, site=DEFAULT_SITE):
+        LOGGER.info('Getting networks')
+        return self._request(endpoint='s/{}/rest/networkconf'.format(site))['data']
 
     def get_fixed_ips(self, site=DEFAULT_SITE):
         '''
@@ -110,18 +122,21 @@ class UniFiController:
         :rtype: list
         '''
         clients = []
+        domains = {}
+
+        for network in self.get_networks():
+            domains[network['_id']] = network.get('domain_name')
 
         for client in self.get_clients():
-            if 'fixed_ip' not in client:
-                continue
-
-            ip   = client['fixed_ip']
+            ip   = client['fixed_ip'] if client['use_fixedip'] else client['ip']
             name = client['name'] if 'name' in client else client['hostname']
             name = re.sub(pattern=r'[\s_-]+', repl='-', string=name, flags=re.IGNORECASE)
             name = re.sub(pattern='[^0-9a-z-]', repl='', string=name, flags=re.IGNORECASE)
 
-            LOGGER.debug('Adding host %s with IP address %s', name, ip)
-            clients.append((ip, name))
+            domain = domains[client['network_id']]
+
+            LOGGER.debug('Adding host %s with IP address %s and domain %s', name, ip, domain)
+            clients.append((ip, '{}.{}'.format(name, domain)))
 
         clients.sort(key=lambda item: item[0])
 
